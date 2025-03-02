@@ -7,7 +7,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'reuters_api'))
 # Add spotcurve to the Python path
 sys.path.append(os.path.abspath("../spotcurve"))
 from main import main as run_spotcurve
-from bond_calcs import get_forward_rate, compute_spot_rate, compute_forward_yield, compute_forward_rate
+from bond_calcs import get_forward_rate, compute_spot_rate, compute_forward_yield, compute_forward_rate, \
+    compute_forward_ytm
 from scipy.optimize import brentq
 from bond_calcs import compute_price_at_delivery, compute_spot_rate, compute_forward_rate
 
@@ -90,58 +91,22 @@ def forecast_nb(basis, last_delivery, compounding, cashflows_df):
         forward_rate = compute_forward_rate(spot_rate_maturity, spot_rate_delivery, time_to_maturity_today, time_to_delivery, compounding)
 
         # Extract cashflows for this bond using RIC
-        bond_cashflows = cashflows_df[cashflows_df["RIC"] == ric]
-        cashflows = bond_cashflows["Coupon"].tolist()
-        cashflow_times = (bond_cashflows["Ttm"] - time_to_delivery).tolist()  # Adjust time from delivery date
+        bond_cashflows = cashflows_df[cashflows_df["RIC"] == ric].sort_values(by=['CF Date']).reset_index(drop=True)
 
         # Compute expected bond price at delivery
-        price_at_delivery = compute_price_at_delivery(cashflows, cashflow_times, spot_rate_delivery, compounding)
+        fwd_px_at_delivery, bond_cf = compute_price_at_delivery(
+            bond_cashflows, forward_curve_matrix, segment_boundaries, time_to_delivery, compounding)
 
-        # Append results
-        forecast_data.append([
-            bond_name,
-            time_to_maturity_today,
-            time_to_maturity_at_delivery,
-            time_to_delivery,
-            spot_rate_maturity,
-            spot_rate_delivery
-        ])
+        fwd_ytm = compute_forward_ytm(bond_cf, fwd_px_at_delivery, compounding)
 
-        # Convert to DataFrame
-    forecast_df = pd.DataFrame(forecast_data, columns=[
-        "Bond", "Time to Maturity Today", "Time to Maturity at Delivery",
-        "Time to Delivery", "Spot Rate Today (Maturity)", "Spot Rate Today (Delivery)"
-    ])
+        # Convert bond_row to dictionary and add new fields
+        bond_data = bond_row.to_dict()
+        bond_data["Fwd_Px_At_Delivery"] = fwd_px_at_delivery
+        bond_data["Fwd_YTM"] = fwd_ytm
+
+        # Append to results list
+        forecast_data.append(bond_data)
+
+    forecast_df = pd.DataFrame(forecast_data)
 
     return forecast_df
-
-
-def compute_forward_ytm(cashflows, times, price_at_delivery, spot_rate_delivery, compounding="Discrete"):
-    """
-    Computes the Forward Yield to Maturity (YTM) at delivery using numerical solving.
-
-    Parameters:
-    - cashflows (list): List of future cashflows (coupons + principal).
-    - times (list): Time (in years) from delivery until each cashflow.
-    - price_at_delivery (float): Expected bond price at delivery.
-    - spot_rate_delivery (float): Spot rate at delivery.
-    - compounding (str): "Cont" for continuous compounding, "Discrete" otherwise.
-
-    Returns:
-    - float: Forward Yield to Maturity (YTM).
-    """
-
-    def ytm_function(ytm):
-        if compounding == "Cont":
-            return sum(cf * np.exp(-ytm * t) for cf, t in zip(cashflows, times)) - price_at_delivery
-        elif compounding == "Discrete":
-            return sum(cf / ((1 + ytm) ** t) for cf, t in zip(cashflows, times)) - price_at_delivery
-        else:
-            raise ValueError("Invalid compounding method. Choose 'Discrete' or 'Cont'.")
-
-    # Solve for YTM numerically using Brent's method
-    try:
-        ytm_forward = brentq(ytm_function, -0.5, 0.5)  # Bounds for solving YTM
-        return ytm_forward
-    except ValueError:
-        return np.nan  # Return NaN if solving fails

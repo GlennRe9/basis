@@ -6,13 +6,16 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'reuters_api'))
 # Add spotcurve to the Python path
 sys.path.append(os.path.abspath("../spotcurve"))
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 import subprocess
 
 
 # Now you can import your functions
 from reuters_api.mappings import cat_dict  #
-from data_loader import load_basis_data, align_yield_hist_with_maturities, prep_basis_data
+from data_loader import load_basis_data, align_yield_hist_with_maturities, prep_basis_data, prep_hist_data
 from data_loader import build_yield_hist
 from main import main as run_spotcurve
 from reuters_api.hist_downloader import main as download_history  # Rename import to avoid conflicts
@@ -34,29 +37,12 @@ import statsmodels.api as sm
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
+from mappings import contract_map, country_map, mat_map
 
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 400)
 
-
-country_map = {
-    'IK': 'IT',
-    'RX': 'DE',
-    'DU': 'DE'
-}
-
-contract_map = {
-    'IK': 'IK',
-    'DU': 'Schatz',
-    'RX': 'Bund'
-}
-
-mat_map = {
-    'Schatz': 2,
-    'IK': 10,
-    'Bund': 10
-}
 
 def yield_focaresting(basis, yield_hist, last_delivery, compounding, cashflows_df):
     yield_hist = align_yield_hist_with_maturities(basis, yield_hist)
@@ -72,8 +58,18 @@ def yield_focaresting(basis, yield_hist, last_delivery, compounding, cashflows_d
     net_basis = compute_net_basis(basis, price_df)
 
     net_basis = net_basis.round(3)
-    forecast_nb(basis, last_delivery, compounding, cashflows_df)
+    logger.info(f"Preliminary Net Basis matrix is :\n{net_basis}")
 
+    forecasts = forecast_nb(basis, last_delivery, compounding, cashflows_df)
+
+    net_basis_FV = compute_net_basis(basis, price_df, forecasts)
+
+    net_basis = net_basis.merge(
+        net_basis_FV.rename(columns={"Fwd_Px_At_Delivery": "FV Net Basis"}),
+        left_index=True,
+        right_index=True,
+        how="left"
+    )
 
     breakpoint()
 
@@ -97,7 +93,7 @@ def main():
     # Get data from basis path excel spreadsheet and 'basis' sheet
     basis = load_basis_data(basis_path, contract)
     basis = prep_basis_data(basis, last_delivery)
-
+    basis_hist = prep_hist_data(basis_contract, basis)
 
     today = pd.Timestamp.now().strftime('%Y-%m-%d')
 

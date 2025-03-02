@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
-from scipy.optimize import brentq
-
+from scipy.optimize import brentq, root_scalar
 
 
 def compute_forward_yield(T1, T2, forward_curve_matrix, segment_boundaries):
@@ -154,7 +153,7 @@ def generate_cashflows(bond, today=None):
     #issue_date = pd.to_datetime(["Issue Date"], dayfirst=True)
     today = pd.Timestamp.today() if today is None else pd.to_datetime(today)
 
-    coupon = bond['Coupon']
+    coupon = bond['Coupon'] / 2
     cashflow_dates = []
     next_coupon_date = maturity
 
@@ -218,23 +217,104 @@ def compute_forward_ytm(cashflows, times, price_at_delivery, spot_rate_delivery,
         return np.nan  # Return NaN if solving fails
 
 
-def compute_price_at_delivery(cashflows, times, spot_rate_delivery, compounding="Discrete"):
+def compute_price_at_delivery(bond_cf, forward_curve_matrix, segment_boundaries, time_to_delivery, compounding="Discrete"):
     """
-    Computes the expected bond price at delivery.
+    Computes the expected bond price at delivery using the correct forward-implied spot rates.
 
     Parameters:
     - cashflows (list): Future cashflows (coupons + principal).
-    - times (list): Time (in years) from delivery until each cashflow.
-    - spot_rate_delivery (float): Spot rate at delivery.
+    - cashflow_times (list): Time (in years) from today until each cashflow.
+    - forward_curve_matrix (numpy.ndarray): A (n_segments, 5) matrix of quartic coefficients for the forward curve.
+    - segment_boundaries (numpy.ndarray): List of segment breakpoints, including 0.
+    - time_to_delivery (float): Time (in years) from today to the delivery date.
     - compounding (str): "Cont" for continuous compounding, "Discrete" otherwise.
 
     Returns:
     - float: Expected bond price at delivery.
     """
-    if compounding == "Cont":
-        return sum(cf * np.exp(-spot_rate_delivery * t) for cf, t in zip(cashflows, times))
-    elif compounding == "Discrete":
-        return sum(cf / ((1 + spot_rate_delivery) ** t) for cf, t in zip(cashflows, times))
-    else:
-        raise ValueError("Invalid compounding method. Choose 'Discrete' or 'Cont'.")
+    today = pd.Timestamp.today()
+    bond_cf = bond_cf.copy()
+    bond_cf['fwd_Ttm'] = bond_cf["Ttm"] - time_to_delivery
 
+    # Compute today's spot rate for the delivery time
+    delivery_spot = compute_spot_rate(time_to_delivery, forward_curve_matrix, segment_boundaries)
+    bond_cf['spot_today'] = bond_cf['Ttm'].apply(lambda t: compute_spot_rate(t, forward_curve_matrix, segment_boundaries))
+
+
+    price_at_delivery = 0
+
+    # Initialize empty lists to store computed values
+    current_spot_list, fwd_spot_list, fwd_df_list, discounted_CF_list = [], [], [], []
+
+    # Loop through each row in the dataframe
+    for _, row in bond_cf.iterrows():
+        cf_amount = row['Coupon']
+        cf_t = row['Ttm']
+        fwd_ttm = row['fwd_Ttm']
+
+        # Compute today's spot rate for this cashflow time
+        current_spot = compute_spot_rate(cf_t, forward_curve_matrix, segment_boundaries)
+        current_spot_list.append(current_spot)
+
+        # Compute the forward-implied spot rate at delivery for this cashflow
+        fwd_spot = compute_forward_rate(
+            current_spot, # Spot rate today for this cashflow maturity
+            delivery_spot, # Spot rate today for delivery date
+            cf_t,  # Time to cashflow
+            time_to_delivery, # Time to delivery
+            compounding)
+        fwd_spot_list.append(fwd_spot)
+
+        # Compute forward discount factors
+        if compounding == "Cont":
+            fwd_df = np.exp(-fwd_spot * fwd_ttm)
+        elif compounding == "Discrete":
+            fwd_df = 1 / ((1 + fwd_spot) ** fwd_ttm)
+        else:
+            raise ValueError("Invalid compounding method. Choose 'Discrete' or 'Cont'.")
+
+        fwd_df_list.append(fwd_df)
+
+        # Compute discounted cashflow
+        discounted_CF = cf_amount * fwd_df
+        discounted_CF_list.append(discounted_CF)
+
+    # Store computed values into bond_cf DataFrame
+    bond_cf['spot_today'] = current_spot_list
+    bond_cf['fwd_spot'] = fwd_spot_list
+    bond_cf['fwd_df'] = fwd_df_list
+    bond_cf['discounted_CF'] = discounted_CF_list
+
+    bond_fwd_px = bond_cf['discounted_CF'].sum()
+    return bond_fwd_px, bond_cf
+
+def compute_forward_ytm(bond_cf, fwd_px_at_delivery, compounding):
+    """
+    Computes the forward yield to maturity (YTM) for a bond at the delivery date.
+
+    Parameters:
+    - bond_cf (DataFrame): DataFrame containing bond cashflows with 'Coupon' and 'fwd_Ttm'.
+    - fwd_px_at_delivery (float): The forward price of the bond at delivery.
+    - compounding (str): "Cont" for continuous compounding, "Discrete" otherwise.
+
+    Returns:
+    - float: The forward yield to maturity.
+    """
+
+    def present_value_of_cashflows(y):
+        """Computes the present value of bond cashflows discounted at YTM y."""
+        if compounding == "Cont":
+            discounted_cf = bond_cf['Coupon'] * np.exp(-y * bond_cf['fwd_Ttm'])
+        elif compounding == "Discrete":
+            discounted_cf = bond_cf['Coupon'] / ((1 + y) ** bond_cf['fwd_Ttm'])
+        else:
+            raise ValueError("Invalid compounding method. Choose 'Discrete' or 'Cont'.")
+
+        return discounted_cf.sum() - fwd_px_at_delivery
+
+    # Solve for YTM using numerical root-finding
+    try:
+        result = root_scalar(present_value_of_cashflows, bracket=[-0.1, 0.5], method='brentq')
+        return result.root if result.converged else np.nan
+    except ValueError:
+        return np.nan  # If the solver fails, return NaN
