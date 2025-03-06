@@ -66,10 +66,19 @@ def prep_basis_calc(curr_date, today, bondData_, long_bond_hist, deliverable):
     n_yields_new = len(bondData_['Yield to Maturity'])
     logger.info(f"We have {n_yields} yields before and {n_yields_new} after merging historical yields.")
 
-    # Convert last delivery date to a timestamp
-    next_delivery = deliverable[deliverable['DATE'] == curr_date_str]['Delivery Date'].unique()[0]
+    # **STEP 2: Find the next available delivery date**
+    next_delivery = None
+    # **STEP 2: Find the latest available delivery date**
+    search_date = curr_date
 
-    deliverable = deliverable[deliverable['DATE'] == curr_date_str].copy()
+    while search_date not in deliverable['DATE'].values:
+        logger.info(f"No delivery date found for {search_date}, trying previous day.")
+        search_date -= pd.Timedelta(days=1)  # Move one day backward
+
+    # **STEP 3: Filter deliverable bonds**
+    deliverable = deliverable[deliverable['DATE'] == search_date].copy()
+    next_delivery = deliverable['Delivery Date'].values[0]
+
     bondData_deliv = bondData_[bondData_['ISIN'].isin(deliverable['ISIN'])]
     bondData_deliv = bondData_deliv.merge(deliverable[['ISIN', 'Conversion Factor']], on='ISIN', how='left')
     bondData_deliv = bondData_deliv.drop(columns=['Coupon Frequency', 'Price Accrued Interest Flag', 'Z-Spread'])
@@ -86,9 +95,9 @@ def prep_basis_calc(curr_date, today, bondData_, long_bond_hist, deliverable):
 
     return bondData_, bondData_deliv, next_delivery, cashflows_df
 
-def compute_hist_nb(basis) -> pd.DataFrame:
+def compute_hist_FV_NB(basis) -> pd.DataFrame:
     """
-    Computes the net basis for each bond in the delivery baskets
+    Computes the Fair Value net basis for each bond in the delivery baskets
     Returns:
     - pd.DataFrame: Net basis for each bond.
     """

@@ -8,6 +8,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 import sys
 import os
+import multiprocessing as mp
+from functools import partial
 sys.path.append(os.path.join(os.path.dirname(__file__), 'reuters_api'))
 # Add spotcurve to the Python path
 sys.path.append(os.path.abspath("../spotcurve"))
@@ -25,7 +27,7 @@ from data_loader import load_basis_data, \
     prep_hist_data, clean_data
 from bond_calcs import get_business_days, compute_spot_rate, compute_forward_rate
 from bond_calcs import generate_cashflows, compute_price_at_delivery, compute_forward_ytm
-from basis_calculations import compute_net_basis, compute_hist_nb, prep_basis_calc
+from basis_calculations import compute_net_basis, compute_hist_FV_NB, prep_basis_calc
 from cf_calculator import get_next_delivery_dates
 
 from pricing import apply_yield_bumps
@@ -167,7 +169,8 @@ def forecast_nb(
 
 
         forecast_df = pd.DataFrame(forecast_data)
-        forecast_df = compute_hist_nb(forecast_df)
+        #Computes the historical Fair Value NB
+        forecast_df = compute_hist_FV_NB(forecast_df)
 
         if not forecast_df.empty:
             historical_forecasts = pd.concat([historical_forecasts, forecast_df], ignore_index=True)
@@ -285,3 +288,10 @@ def plot_net_basis_comparison(forecasts_df):
     plt.show()
 if __name__ == "__main__":
     main()
+
+
+#ToDo if deliverable bonds is not run, this means it will not find deliverable bonds.
+
+
+
+# Time without multi threading:
