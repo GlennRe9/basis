@@ -4,11 +4,11 @@ from datetime import datetime
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+from mappings import future_contract_map
 
 def prep_hist_data(contract, basis) -> pd.DataFrame:
     today = pd.Timestamp.now()
     basis['Ticker Composite'] = basis['Ticker Composite'].str.rstrip('=')
-
 
     mon_hist_sheet = f"{contract}_history"
     repo_hist_sheet = f"{contract}_repo_history"
@@ -85,9 +85,10 @@ def prep_hist_data(contract, basis) -> pd.DataFrame:
     ffill_counts = (missing_before & ~missing_after).sum()
     logging.info(f"We have the following missing values that we forward filled {ffill_counts.to_dict()}")
 
+    logger.info(f"We have history starting in {long_hist_data['DATE'].min()} and ending in {long_hist_data['DATE'].max()}")
+
     return long_hist_data
-    breakpoint()
-    
+
 
 def prep_basis_data(basis: pd.DataFrame, last_delivery: str) -> pd.DataFrame:
     """
@@ -146,6 +147,49 @@ def load_basis_data(file_path: str, contract: str) -> pd.DataFrame:
     basis["Maturity Date"] = pd.to_datetime(basis["Maturity Date"])
 
     return basis
+
+
+def clean_data(bondData, basis_contract,future_hist,bond_hist,deliverable):
+
+    # Future cleaning
+    date_col = future_hist.columns[0]
+    future_hist = future_hist.rename(columns={date_col: 'DATE'})
+    future_hist['DATE'] = pd.to_datetime(future_hist['DATE'])
+    future_hist = future_hist.set_index('DATE')
+    future_hist = future_hist.sort_index()
+    future_hist = future_hist[future_contract_map[basis_contract]]
+    future_hist = future_hist.to_frame()
+    future_hist.columns = ['Future Price']
+
+    # Bond cleaning
+    # We filter the bonds in the history such that we only hold the ones which are present in the
+    # deliverable history file - so as to reduce the weight of long_hist
+    long_hist_size = len(bond_hist)
+    deliverable_isins = deliverable['ISIN'].unique()  # Get unique deliverable ISINs
+    logger.info(f"Number of deliverable bonds this year: {len(deliverable_isins)}")
+    logger.info(f"The deliverable bonds for this year are {deliverable_isins}")
+    long_bond_hist = bond_hist.copy() # We keep the full history of data in long_bond_hist
+    bond_hist = bond_hist[bond_hist['ISIN'].isin(deliverable_isins)]  # Keep only deliverable bonds in bond_hist
+    logger.info(f"Current history length reduced from {long_hist_size} to {len(bond_hist)}")
+
+    # Clean deliverable
+    deliverable = deliverable.rename(columns={'Date': 'DATE'})  # Rename 'Date' to match bond_hist
+    deliverable['DATE'] = pd.to_datetime(deliverable['DATE'])  # Ensure date format consistency
+    deliverable['Delivery Date'] = pd.to_datetime(deliverable['Delivery Date'])  # Ensure date format consistency
+
+    # We merge deliverable bonds with 'inner' so only when there's a match, and we merge the coupons in
+    bond_hist = bond_hist.merge(deliverable[['DATE', 'ISIN']], on=['DATE', 'ISIN'], how='inner')
+    bond_hist = bond_hist.merge(bondData[['ISIN', 'Coupon']], on='ISIN', how='left')
+
+    logger.info(f"Current history length reduced from {long_hist_size} to {len(bond_hist)} after removing all "
+                f"pre-delivererable bond history")
+
+    # Bond Data cleaning
+    bondData.rename(columns={'Ticker Composite': 'RIC'}, inplace=True)
+    #bondData.drop(columns=['Z-Spread'], inplace=True) # 'Coupon Frequency', 'Price Accrued Interest Flag'
+
+    # We sort the bond_hist by date
+    return bondData, bond_hist, future_hist, deliverable, long_bond_hist
 
 import pandas as pd
 

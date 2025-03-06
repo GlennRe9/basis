@@ -1,8 +1,31 @@
 import pandas as pd
 import numpy as np
 from scipy.optimize import brentq, root_scalar
+import holidays
+from pandas.tseries.offsets import CustomBusinessDay
 
 
+
+def get_business_days(start_year, today):
+    """
+    Generates business days excluding weekends and German public holidays.
+
+    Parameters:
+    - start_year (int): The starting year for generating business days.
+    - today (str): The end date in 'YYYY-MM-DD' format.
+
+    Returns:
+    - pd.DatetimeIndex: A list of valid business days.
+    """
+
+    # 🎯 Get official German holidays dynamically
+    german_holidays = holidays.Germany(years=range(start_year, today.year + 1))
+
+    # 🏦 Define a custom business day calendar excluding weekends & holidays
+    german_bdays = CustomBusinessDay(holidays=german_holidays)
+
+    # 📆 Generate business days
+    return pd.date_range(start=f"{start_year}-01-01", end=today, freq=german_bdays)
 def compute_forward_yield(T1, T2, forward_curve_matrix, segment_boundaries):
     """
     Computes the forward yield for a bond with time-to-maturity T1 today,

@@ -1,9 +1,10 @@
 import pandas as pd
 import logging
+from bond_calcs import generate_cashflows
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def compute_net_basis(basis: pd.DataFrame, price_df: pd.DataFrame, forecasts: pd.DataFrame = None) -> pd.DataFrame:
+def compute_net_basis(basis: pd.DataFrame, price_df: pd.DataFrame = None, forecasts: pd.DataFrame = None) -> pd.DataFrame:
     """
     Computes the net basis for each bond in the delivery basket.
 
@@ -45,6 +46,71 @@ def compute_net_basis(basis: pd.DataFrame, price_df: pd.DataFrame, forecasts: pd
 
     return net_basis.round(3)
 
+
+def prep_basis_calc(curr_date, today, bondData_, long_bond_hist, deliverable):
+    bondData_ = bondData_[bondData_['Issue Date'] <= curr_date]
+    logger.info(f"{len(bondData_)} were available on {curr_date}")
+    curr_date_str = curr_date.strftime('%Y-%m-%d')
+    hist_data = long_bond_hist[long_bond_hist['DATE'] == curr_date][['ISIN', 'Yield', 'Dirty Price', 'Repo Rate']]
+    # rename Dirty Price to 'historical dirty price'
+    hist_data.rename(columns={'Dirty Price': 'Historical Dirty Price', 'Repo Rate': 'Historical Repo Rate'}, inplace=True)
+
+    # Merge historical yields and prices into bondData
+    n_yields = len(bondData_['Yield to Maturity'])
+    bondData_ = bondData_.merge(hist_data[['ISIN', 'Yield', 'Historical Dirty Price', 'Historical Repo Rate']], on='ISIN', how='left')
+    bondData_['Yield to Maturity'] = bondData_['Yield']
+    bondData_['Dirty Price'] = bondData_['Historical Dirty Price']
+    bondData_['Repo Rate'] = bondData_['Historical Repo Rate']
+    bondData_.drop(columns=['Yield', 'Historical Dirty Price', 'Historical Repo Rate'], inplace=True)
+
+    n_yields_new = len(bondData_['Yield to Maturity'])
+    logger.info(f"We have {n_yields} yields before and {n_yields_new} after merging historical yields.")
+
+    # Convert last delivery date to a timestamp
+    next_delivery = deliverable[deliverable['DATE'] == curr_date_str]['Delivery Date'].unique()[0]
+
+    deliverable = deliverable[deliverable['DATE'] == curr_date_str].copy()
+    bondData_deliv = bondData_[bondData_['ISIN'].isin(deliverable['ISIN'])]
+    bondData_deliv = bondData_deliv.merge(deliverable[['ISIN', 'Conversion Factor']], on='ISIN', how='left')
+    bondData_deliv = bondData_deliv.drop(columns=['Coupon Frequency', 'Price Accrued Interest Flag', 'Z-Spread'])
+    # Carry calculations
+    days_to_delivery = ( next_delivery - today ).days
+    bondData_deliv['Income to delivery'] = ( bondData_deliv['Coupon'] * days_to_delivery / 360)
+    bondData_deliv['Cost to delivery'] = bondData_deliv['Dirty Price'] * (bondData_deliv['Repo Rate'].div(100)) * ( days_to_delivery / 360 )
+    bondData_deliv['Carry to delivery'] = bondData_deliv['Income to delivery'] - bondData_deliv['Cost to delivery']
+
+    # Get cashflow list
+    # Generate cashflows **before** yield forecasting
+    cashflow_list = bondData_.apply(lambda bond: generate_cashflows(bond, today), axis=1)
+    cashflows_df = pd.concat(cashflow_list.tolist(), ignore_index=True)
+
+    return bondData_, bondData_deliv, next_delivery, cashflows_df
+
+def compute_hist_nb(basis) -> pd.DataFrame:
+    """
+    Computes the net basis for each bond in the delivery baskets
+    Returns:
+    - pd.DataFrame: Net basis for each bond.
+    """
+
+    dov = 0
+    # We add income to delivery to the clean price and then divide by conversion factor
+    price_df = basis.copy()
+    price_df['Converted Price'] = price_df['Fwd_Px_At_Delivery'] / price_df['Conversion Factor']
+
+    ctd_index = price_df['Converted Price'].idxmin()
+    logger.info(f"Cheapest to deliver bond is expected to be {ctd_index}")
+    # Extract values for CTD bond
+    ctd_px = price_df.loc[ctd_index, 'Fwd_Px_At_Delivery']
+    carry_to_delivery = price_df.loc[ctd_index, 'Carry to delivery']
+    ctd_cf = price_df.loc[ctd_index, 'Conversion Factor']
+    f_price = (ctd_px - carry_to_delivery - dov) / ctd_cf
+
+    net_basis = price_df.copy()
+
+    net_basis['FV Net Basis'] = net_basis['Fwd_Clean_Px_At_Delivery'] - net_basis['Carry to delivery'] - (net_basis['Conversion Factor'] * f_price)
+
+    return net_basis[['DATE', 'RIC', 'ISIN', 'Description', 'Maturity Date', 'Repo Rate', 'Conversion Factor', 'Carry to delivery', 'Fwd_Px_At_Delivery', 'Fwd_YTM', 'Fwd_Clean_Px_At_Delivery', 'Converted Price', 'FV Net Basis']].round(3)
 
 def compute_futures_price(basis: pd.DataFrame, cf_df: pd.DataFrame, price_df: pd.DataFrame) -> pd.DataFrame:
     """
