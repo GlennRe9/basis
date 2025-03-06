@@ -47,7 +47,7 @@ def compute_net_basis(basis: pd.DataFrame, price_df: pd.DataFrame = None, foreca
     return net_basis.round(3)
 
 
-def prep_basis_calc(curr_date, today, bondData_, long_bond_hist, deliverable):
+def prep_basis_calc(curr_date, bondData_, long_bond_hist, deliverable):
     bondData_ = bondData_[bondData_['Issue Date'] <= curr_date]
     logger.info(f"{len(bondData_)} were available on {curr_date}")
     curr_date_str = curr_date.strftime('%Y-%m-%d')
@@ -83,14 +83,14 @@ def prep_basis_calc(curr_date, today, bondData_, long_bond_hist, deliverable):
     bondData_deliv = bondData_deliv.merge(deliverable[['ISIN', 'Conversion Factor']], on='ISIN', how='left')
     bondData_deliv = bondData_deliv.drop(columns=['Coupon Frequency', 'Price Accrued Interest Flag', 'Z-Spread'])
     # Carry calculations
-    days_to_delivery = ( next_delivery - today ).days
+    days_to_delivery = ( next_delivery - curr_date ).days
     bondData_deliv['Income to delivery'] = ( bondData_deliv['Coupon'] * days_to_delivery / 360)
     bondData_deliv['Cost to delivery'] = bondData_deliv['Dirty Price'] * (bondData_deliv['Repo Rate'].div(100)) * ( days_to_delivery / 360 )
     bondData_deliv['Carry to delivery'] = bondData_deliv['Income to delivery'] - bondData_deliv['Cost to delivery']
 
     # Get cashflow list
     # Generate cashflows **before** yield forecasting
-    cashflow_list = bondData_.apply(lambda bond: generate_cashflows(bond, today), axis=1)
+    cashflow_list = bondData_.apply(lambda bond: generate_cashflows(bond, curr_date), axis=1)
     cashflows_df = pd.concat(cashflow_list.tolist(), ignore_index=True)
 
     return bondData_, bondData_deliv, next_delivery, cashflows_df

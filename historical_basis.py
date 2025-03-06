@@ -94,9 +94,7 @@ def hist_basis(basis_contract, bond_hist, future_hist, deliverable, start_year):
 
     return bond_hist[['DATE', 'ISIN', 'Gross Basis', 'Net Basis']]
 
-
 def forecast_nb(
-        today,
         start_year,
         bondData,
         bond_hist,
@@ -115,16 +113,18 @@ def forecast_nb(
     - DataFrame: A DataFrame with bond names, time to maturity, and forward yields.
     """
 
+    today = pd.Timestamp.today()
     dates = get_business_days(start_year, pd.Timestamp(today) - pd.Timedelta(days=2))
     historical_forecasts = pd.DataFrame()
     for curr_date in dates:
         logger.info(f"Processing {curr_date}")
         bondData_ = bondData.copy()
-        today = pd.Timestamp.today()
-        bondData_, bondData_deliv, next_delivery, cashflows_df = prep_basis_calc(curr_date, today, bondData_, long_bond_hist, deliverable)
+        bondData_, bondData_deliv, next_delivery, cashflows_df = prep_basis_calc(curr_date, bondData_, long_bond_hist, deliverable)
 
+        logging.disable(logging.CRITICAL)
         # Get forward curve & segment boundaries from spotcurve model
         forward_curve, segment_boundaries = run_spotcurve(bondData_,curr_date)
+        logging.disable(logging.NOTSET)  # Re-enable logging after the function call
 
         # Reshape forward_curve into (n_segments, 5)
         n_segments = len(segment_boundaries) + 1
@@ -138,9 +138,9 @@ def forecast_nb(
             ric = bond_row["RIC"]
 
             # Compute time to maturity TODAY (in years)
-            time_to_maturity_today = (maturity_date - today).days / 365
+            time_to_maturity_today = (maturity_date - curr_date).days / 365
             time_to_maturity_at_delivery = (maturity_date - next_delivery).days / 365
-            time_to_delivery = (next_delivery - today).days / 365
+            time_to_delivery = (next_delivery - curr_date).days / 365
 
             # Extract spot rate today for bond maturity
             spot_rate_maturity = compute_spot_rate(time_to_maturity_today, forward_curve_matrix, segment_boundaries)
@@ -190,8 +190,6 @@ def main():
     compounding = 'Discrete'
     start_year = 2025
 
-    today = pd.Timestamp.now().strftime('%Y-%m-%d')
-
     # Get data from basis path excel spreadsheet and 'basis' sheet
 
     basis_monitor_sheet = basis_contract + ' Monitor'
@@ -202,46 +200,13 @@ def main():
 
     bondData, bond_hist, future_hist, deliverable, long_bond_hist = clean_data(bondData,basis_contract,future_hist,bond_hist,deliverable)
 
-    forecasts = forecast_nb(today, start_year, bondData, bond_hist[['DATE', 'ISIN', 'Yield']], long_bond_hist[['DATE', 'ISIN', 'Yield', 'Dirty Price', 'Repo Rate']], deliverable, compounding)
+    forecasts = forecast_nb(start_year, bondData, bond_hist[['DATE', 'ISIN', 'Yield']], long_bond_hist[['DATE', 'ISIN', 'Yield', 'Dirty Price', 'Repo Rate']], deliverable, compounding)
     basis_hist = hist_basis(basis_contract, bond_hist, future_hist, deliverable, start_year)
     basis_hist.to_csv("basis_hist.csv")
 
     forecasts_df = forecasts.merge(basis_hist[["DATE", "ISIN", "Net Basis"]], on=["ISIN", "DATE"], how="left")
     breakpoint()
 
-
-def plot_net_basis_comparison(forecasts_df):
-    """
-    Plots Fair Value Net Basis vs Actual Net Basis over time for each ISIN.
-
-    Parameters:
-    - forecasts_df (pd.DataFrame): DataFrame containing "DATE", "ISIN", "FV Net Basis", and "Net Basis".
-
-    Returns:
-    - None (displays plots).
-    """
-    # Ensure DATE column is in datetime format
-    forecasts_df["DATE"] = pd.to_datetime(forecasts_df["DATE"])
-
-    # Get unique ISINs for plotting
-    unique_isins = forecasts_df["ISIN"].unique()
-
-    # Create plots for each ISIN
-    for isin in unique_isins:
-        isin_data = forecasts_df[forecasts_df["ISIN"] == isin]
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(isin_data["DATE"], isin_data["FV Net Basis"], label="Fair Value Net Basis", linestyle="-", color="blue")
-        plt.plot(isin_data["DATE"], isin_data["Net Basis"], label="Actual Net Basis", linestyle="--", color="red")
-
-        plt.xlabel("Date")
-        plt.ylabel("Net Basis")
-        plt.title(f"Net Basis Comparison for ISIN: {isin}")
-        plt.legend()
-        plt.grid(True)
-        plt.xticks(rotation=45)
-
-        plt.show()
 
 
 def plot_net_basis_comparison(forecasts_df):
@@ -292,6 +257,3 @@ if __name__ == "__main__":
 
 #ToDo if deliverable bonds is not run, this means it will not find deliverable bonds.
 
-
-
-# Time without multi threading:
